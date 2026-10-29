@@ -59,6 +59,9 @@ const client = new Client({
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.MessageContent,
     ],
+    allowedMentions: {
+        parse: ['everyone', 'roles', 'users'],
+    },
 });
 
 // ─── UAE Time Helpers ──────────────────────────────────────
@@ -233,11 +236,13 @@ async function sendPrayerNotification(prayerKey, targetChannel = CHANNEL_ID) {
         files.push(new AttachmentBuilder(adhanPath, { name: 'adhan.mp3' }));
     }
 
-    const serverIcon = SERVER_ICON || channel.guild?.iconURL({ size: 1024, dynamic: true });
+    let serverIcon = SERVER_ICON || channel.guild?.iconURL({ size: 1024, dynamic: true });
+    if (serverIcon && (serverIcon.endsWith('?') || serverIcon.includes('true&size') || !serverIcon.startsWith('http'))) {
+        serverIcon = channel.guild?.iconURL({ size: 1024, dynamic: true });
+    }
 
     const embed = new EmbedBuilder()
         .setTitle(`حان الآن موعد صلاة ${prayer.ar}`)
-        .setThumbnail(serverIcon)
         .addFields(
             {
                 name: `الصلاة القادمة (${nextPrayer.ar})`,
@@ -252,8 +257,16 @@ async function sendPrayerNotification(prayerKey, targetChannel = CHANNEL_ID) {
         )
         .setColor(0x5D4037);
 
-    if (GIF_URL) {
-        embed.setImage(GIF_URL);
+    if (serverIcon) {
+        try {
+            embed.setThumbnail(serverIcon);
+        } catch (e) {}
+    }
+
+    if (GIF_URL && GIF_URL.startsWith('http')) {
+        try {
+            embed.setImage(GIF_URL);
+        } catch (e) {}
     }
 
     // إرسال تنبيه الأذان (المنشن الوحيد)
@@ -261,6 +274,7 @@ async function sendPrayerNotification(prayerKey, targetChannel = CHANNEL_ID) {
         content: MENTION,
         embeds: [embed],
         files,
+        allowedMentions: { parse: ['everyone', 'roles', 'users'] },
     });
 
     console.log(`✅ تم إرسال تنبيه ${prayer.ar} (${prayerKey}) — ${curTime} مع المنشن`);
@@ -394,6 +408,15 @@ client.once(Events.ClientReady, async () => {
     await registerCommands();
     await fetchPrayerTimes();
 
+    // تجاهل الصلوات التي انقضى وقتها قبل تشغيل البوت اليوم حتى لا تنزل بأثر رجعي
+    const startupHHMM = formatHHMM(getUAETime());
+    for (const p of PRAYER_ORDER) {
+        if (currentTimings[p] && currentTimings[p] <= startupHHMM) {
+            notifiedToday.add(p);
+            preNotifiedToday.add(p);
+        }
+    }
+
     // المجدول كل دقيقة
     cron.schedule('* * * * *', async () => {
         const hhmm = formatHHMM(getUAETime());
@@ -404,7 +427,7 @@ client.once(Events.ClientReady, async () => {
 
             // أ) تنبيه قبل الأذان بـ 10 دقائق (بدون منشن)
             const preTime = subtractMinutes(prayerTime, 10);
-            if (hhmm === preTime && !preNotifiedToday.has(p)) {
+            if (hhmm >= preTime && hhmm < prayerTime && !preNotifiedToday.has(p)) {
                 preNotifiedToday.add(p);
                 try {
                     await sendPrePrayerReminder(p, CHANNEL_ID);
@@ -414,7 +437,7 @@ client.once(Events.ClientReady, async () => {
             }
 
             // ب) تنبيه الأذان وقت الصلاة (مع المنشن الوحيد)
-            if (hhmm === prayerTime && !notifiedToday.has(p)) {
+            if (hhmm >= prayerTime && !notifiedToday.has(p)) {
                 notifiedToday.add(p);
                 try {
                     await sendPrayerNotification(p, CHANNEL_ID);
